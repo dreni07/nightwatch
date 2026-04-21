@@ -1,7 +1,7 @@
-import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { usePrivateChannel } from '@/shared/hooks/useChannel';
+import { useDebouncedInvalidate } from '@/shared/hooks/useDebouncedInvalidate';
 
 type HeartbeatPayload = {
     project_id: number;
@@ -43,14 +43,14 @@ type RequestPayload = {
 };
 
 function useGlobalProjectsChannel() {
-    const queryClient = useQueryClient();
+    const invalidate = useDebouncedInvalidate();
     const [projectIds, setProjectIds] = useState<number[]>([]);
 
     const onHeartbeat = useCallback(
         (data: unknown) => {
             const payload = data as HeartbeatPayload;
-            queryClient.invalidateQueries({ queryKey: ['projects'] });
-            queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+            invalidate(['projects']);
+            invalidate(['dashboard']);
 
             if (!projectIds.includes(payload.project_id)) {
                 setProjectIds((prev) => [...new Set([...prev, payload.project_id])]);
@@ -63,14 +63,14 @@ function useGlobalProjectsChannel() {
                     : 'Unknown project');
             toast.info(`Heartbeat from ${name}`);
         },
-        [queryClient, projectIds],
+        [invalidate, projectIds],
     );
 
     const onStatusChanged = useCallback(
         (data: unknown) => {
             const payload = data as StatusChangedPayload;
-            queryClient.invalidateQueries({ queryKey: ['projects'] });
-            queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+            invalidate(['projects']);
+            invalidate(['dashboard']);
 
             if (payload.new_status === 'critical') {
                 toast.error(`${payload.project_name} is now CRITICAL`);
@@ -80,7 +80,7 @@ function useGlobalProjectsChannel() {
                 toast.success(`${payload.project_name} status: ${payload.new_status}`);
             }
         },
-        [queryClient],
+        [invalidate],
     );
 
     usePrivateChannel('projects', {
@@ -92,57 +92,57 @@ function useGlobalProjectsChannel() {
 }
 
 function useProjectChannel(projectId: number | null) {
-    const queryClient = useQueryClient();
+    const invalidate = useDebouncedInvalidate();
 
     const onException = useCallback(
         (data: unknown) => {
             const payload = data as ExceptionPayload;
-            queryClient.invalidateQueries({ queryKey: ['exceptions'] });
-            queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+            invalidate(['exceptions']);
+            invalidate(['dashboard']);
             toast.error(`Exception: ${payload.exception_class}`, {
                 description: payload.message.slice(0, 100),
             });
         },
-        [queryClient],
+        [invalidate],
     );
 
     const onLog = useCallback(
         (data: unknown) => {
             const payload = data as LogPayload;
-            queryClient.invalidateQueries({ queryKey: ['logs'] });
-            queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+            invalidate(['logs']);
+            invalidate(['dashboard']);
 
             if (['emergency', 'alert', 'critical'].includes(payload.level)) {
                 toast.error(`[${payload.level.toUpperCase()}] ${payload.message}`);
             }
         },
-        [queryClient],
+        [invalidate],
     );
 
     const onJob = useCallback(
         (data: unknown) => {
             const payload = data as JobPayload;
-            queryClient.invalidateQueries({ queryKey: ['jobs'] });
-            queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+            invalidate(['jobs']);
+            invalidate(['dashboard']);
 
             if (payload.status === 'failed') {
                 toast.error(`Job failed: ${payload.job_class}`);
             }
         },
-        [queryClient],
+        [invalidate],
     );
 
     const onRequest = useCallback(
         (data: unknown) => {
             const payload = data as RequestPayload;
-            queryClient.invalidateQueries({ queryKey: ['requests'] });
-            queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+            invalidate(['requests']);
+            invalidate(['dashboard']);
 
             if (payload.status_code >= 500) {
                 toast.error(`${payload.method} ${payload.uri} → ${payload.status_code}`);
             }
         },
-        [queryClient],
+        [invalidate],
     );
 
     usePrivateChannel(projectId ? `project.${projectId}` : null, {
@@ -151,30 +151,30 @@ function useProjectChannel(projectId: number | null) {
         '.job.received': onJob,
         '.request.received': onRequest,
         '.query.received': () => {
-            queryClient.invalidateQueries({ queryKey: ['queries'] });
-            queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+            invalidate(['queries']);
+            invalidate(['dashboard']);
         },
         '.cache.received': () => {
-            queryClient.invalidateQueries({ queryKey: ['cache'] });
+            invalidate(['cache']);
         },
         '.command.received': () => {
-            queryClient.invalidateQueries({ queryKey: ['commands'] });
+            invalidate(['commands']);
         },
         '.mail.received': () => {
-            queryClient.invalidateQueries({ queryKey: ['mail'] });
+            invalidate(['mail']);
         },
         '.notification.received': () => {
-            queryClient.invalidateQueries({ queryKey: ['notifications'] });
+            invalidate(['notifications']);
         },
         '.outgoing-http.received': () => {
-            queryClient.invalidateQueries({ queryKey: ['outgoing-http'] });
+            invalidate(['outgoing-http']);
         },
         '.scheduled-task.received': () => {
-            queryClient.invalidateQueries({ queryKey: ['scheduled-tasks'] });
+            invalidate(['scheduled-tasks']);
         },
         '.health-check.received': () => {
-            queryClient.invalidateQueries({ queryKey: ['health-checks'] });
-            queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+            invalidate(['health-checks']);
+            invalidate(['dashboard']);
         },
     });
 }

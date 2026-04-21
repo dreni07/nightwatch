@@ -7,14 +7,19 @@ use App\Models\HubHealthCheck;
 use App\Models\HubJob;
 use App\Models\HubRequest;
 use App\Models\Project;
-use Carbon\CarbonInterface;
-use Illuminate\Support\Collection;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 
 class DashboardMetricsService
 {
     private const ERROR_SEVERITIES = ['error', 'critical'];
 
     private const WARNING_SEVERITIES = ['warning', 'info', 'debug'];
+
+    public const CACHE_KEY = 'dashboard:overview';
+
+    private const CACHE_TTL_SECONDS = 5;
 
     /**
      * @return array{
@@ -29,8 +34,18 @@ class DashboardMetricsService
      */
     public function overview(): array
     {
-        $since24h = now()->subHours(24);
-        $since7d = now()->subDays(7)->startOfDay();
+        return Cache::remember(self::CACHE_KEY, self::CACHE_TTL_SECONDS, fn () => $this->compute());
+    }
+
+    private function compute(): array
+    {
+        $since24h = CarbonImmutable::now()->subHours(24);
+        $since7d = CarbonImmutable::now()->subDays(7)->startOfDay();
+
+        $requestStats = HubRequest::query()
+            ->where('sent_at', '>=', $since24h)
+            ->selectRaw('COUNT(*) as total, AVG(duration_ms) as avg_duration')
+            ->first();
 
         $stats = [
             'total_projects' => Project::count(),
@@ -40,11 +55,11 @@ class DashboardMetricsService
                 ->count(),
             'critical_projects' => Project::where('status', 'critical')->count(),
             'total_exceptions_24h' => HubException::where('sent_at', '>=', $since24h)->count(),
-            'total_requests_24h' => HubRequest::where('sent_at', '>=', $since24h)->count(),
-            'avg_response_time_24h' => (int) round(
-                (float) (HubRequest::where('sent_at', '>=', $since24h)->avg('duration_ms') ?? 0),
-            ),
-            'failed_jobs_24h' => HubJob::where('sent_at', '>=', $since24h)->where('status', 'failed')->count(),
+            'total_requests_24h' => (int) ($requestStats->total ?? 0),
+            'avg_response_time_24h' => (int) round((float) ($requestStats->avg_duration ?? 0)),
+            'failed_jobs_24h' => HubJob::where('sent_at', '>=', $since24h)
+                ->where('status', 'failed')
+                ->count(),
             'health_check_failures' => HubHealthCheck::where('sent_at', '>=', $since24h)
                 ->whereIn('status', ['critical', 'error', 'failed'])
                 ->count(),
@@ -71,29 +86,16 @@ class DashboardMetricsService
             ->values()
             ->all();
 
-        $exceptionTimes = HubException::query()
-            ->where('sent_at', '>=', $since24h)
-            ->get(['sent_at', 'severity']);
-
-        $requestTimes = HubRequest::query()
-            ->where('sent_at', '>=', $since24h)
-            ->pluck('sent_at');
-
-        $incidentFlow = $this->hourlyExceptionSeries($exceptionTimes);
+        $incidentFlow = $this->hourlyExceptionSeries($since24h);
         $incidentVolume = array_map(fn (array $row) => [
             'time' => $row['time'],
             'errors' => $row['exceptions'],
             'warnings' => $row['warnings'],
         ], $incidentFlow);
 
-        $throughputChart = $this->hourlyCountSeries($requestTimes);
+        $throughputChart = $this->hourlyRequestCountSeries($since24h);
         $runningChecksChart = $this->hourlyDistinctProjectsWithRequests($since24h);
-
-        $exceptionDaily = HubException::query()
-            ->where('sent_at', '>=', $since7d)
-            ->pluck('sent_at');
-
-        $bugsChart = $this->dailyCountSeries(7, $exceptionDaily);
+        $bugsChart = $this->dailyExceptionCountSeries(7, $since7d);
 
         return [
             'stats' => $stats,
@@ -106,31 +108,37 @@ class DashboardMetricsService
         ];
     }
 
-    
-    private function hourlyExceptionSeries(Collection $exceptions): array
+    /**
+     * @return list<array{time: string, exceptions: int, warnings: int}>
+     */
+    private function hourlyExceptionSeries(CarbonImmutable $since24h): array
     {
-        $start = now()->subHours(23)->startOfHour();
+        $start = CarbonImmutable::now()->subHours(23)->startOfHour();
+
+        $rows = HubException::query()
+            ->where('sent_at', '>=', $since24h)
+            ->selectRaw($this->hourlyBucketExpression('sent_at').' as bucket, severity, COUNT(*) as total')
+            ->groupBy('bucket', 'severity')
+            ->get();
+
         /** @var array<string, array{errors: int, warnings: int}> $counts */
         $counts = [];
+        foreach ($rows as $row) {
+            $key = (string) $row->bucket;
+            $sev = strtolower((string) $row->severity);
+            $total = (int) $row->total;
+            $counts[$key] ??= ['errors' => 0, 'warnings' => 0];
 
-        foreach ($exceptions as $ex) {
-            $key = $ex->sent_at->copy()->startOfHour()->format('Y-m-d H');
-            if (! isset($counts[$key])) {
-                $counts[$key] = ['errors' => 0, 'warnings' => 0];
-            }
-            $sev = strtolower((string) $ex->severity);
-            if (in_array($sev, self::ERROR_SEVERITIES, true)) {
-                $counts[$key]['errors']++;
-            } elseif (in_array($sev, self::WARNING_SEVERITIES, true)) {
-                $counts[$key]['warnings']++;
+            if (in_array($sev, self::WARNING_SEVERITIES, true)) {
+                $counts[$key]['warnings'] += $total;
             } else {
-                $counts[$key]['errors']++;
+                $counts[$key]['errors'] += $total;
             }
         }
 
         $buckets = [];
         for ($i = 0; $i < 24; $i++) {
-            $bucketStart = $start->copy()->addHours($i);
+            $bucketStart = $start->addHours($i);
             $key = $bucketStart->format('Y-m-d H');
             $row = $counts[$key] ?? ['errors' => 0, 'warnings' => 0];
             $buckets[] = [
@@ -143,58 +151,93 @@ class DashboardMetricsService
         return $buckets;
     }
 
-    private function hourlyCountSeries(Collection $times): array
+    /**
+     * @return list<array{value: int}>
+     */
+    private function hourlyRequestCountSeries(CarbonImmutable $since24h): array
     {
-        $start = now()->subHours(23)->startOfHour();
-        $out = [];
+        $start = CarbonImmutable::now()->subHours(23)->startOfHour();
 
-        for ($i = 0; $i < 24; $i++) {
-            $bucketStart = $start->copy()->addHours($i);
-            $bucketEnd = $bucketStart->copy()->endOfHour();
-            $count = $times->filter(
-                fn ($t) => $t >= $bucketStart && $t <= $bucketEnd,
-            )->count();
-            $out[] = ['value' => $count];
-        }
-
-        return $out;
-    }
-
-    
-    private function hourlyDistinctProjectsWithRequests(CarbonInterface $since24h): array
-    {
         $rows = HubRequest::query()
             ->where('sent_at', '>=', $since24h)
-            ->get(['project_id', 'sent_at']);
+            ->selectRaw($this->hourlyBucketExpression('sent_at').' as bucket, COUNT(*) as total')
+            ->groupBy('bucket')
+            ->pluck('total', 'bucket');
 
-        $start = now()->subHours(23)->startOfHour();
+        return $this->fillHourlyBuckets($start, 24, fn (string $key) => (int) ($rows[$key] ?? 0));
+    }
+
+    /**
+     * @return list<array{value: int}>
+     */
+    private function hourlyDistinctProjectsWithRequests(CarbonImmutable $since24h): array
+    {
+        $start = CarbonImmutable::now()->subHours(23)->startOfHour();
+
+        $rows = HubRequest::query()
+            ->where('sent_at', '>=', $since24h)
+            ->selectRaw($this->hourlyBucketExpression('sent_at').' as bucket, COUNT(DISTINCT project_id) as total')
+            ->groupBy('bucket')
+            ->pluck('total', 'bucket');
+
+        return $this->fillHourlyBuckets($start, 24, fn (string $key) => (int) ($rows[$key] ?? 0));
+    }
+
+    /**
+     * @return list<array{value: int}>
+     */
+    private function dailyExceptionCountSeries(int $days, CarbonImmutable $since): array
+    {
+        $rows = HubException::query()
+            ->where('sent_at', '>=', $since)
+            ->selectRaw($this->dailyBucketExpression('sent_at').' as bucket, COUNT(*) as total')
+            ->groupBy('bucket')
+            ->pluck('total', 'bucket');
+
         $out = [];
-
-        for ($i = 0; $i < 24; $i++) {
-            $bucketStart = $start->copy()->addHours($i);
-            $bucketEnd = $bucketStart->copy()->endOfHour();
-            $n = $rows
-                ->filter(fn ($r) => $r->sent_at >= $bucketStart && $r->sent_at <= $bucketEnd)
-                ->pluck('project_id')
-                ->unique()
-                ->count();
-            $out[] = ['value' => $n];
+        for ($i = $days - 1; $i >= 0; $i--) {
+            $day = CarbonImmutable::now()->subDays($i)->startOfDay();
+            $key = $day->format('Y-m-d');
+            $out[] = ['value' => (int) ($rows[$key] ?? 0)];
         }
 
         return $out;
     }
 
-    
-    private function dailyCountSeries(int $days, Collection $times): array
+    /**
+     * @param  callable(string): int  $valueFor
+     * @return list<array{value: int}>
+     */
+    private function fillHourlyBuckets(CarbonImmutable $start, int $hours, callable $valueFor): array
     {
         $out = [];
-        for ($i = $days - 1; $i >= 0; $i--) {
-            $day = now()->subDays($i)->startOfDay();
-            $end = $day->copy()->endOfDay();
-            $count = $times->filter(fn ($t) => $t >= $day && $t <= $end)->count();
-            $out[] = ['value' => $count];
+        for ($i = 0; $i < $hours; $i++) {
+            $bucketStart = $start->addHours($i);
+            $out[] = ['value' => $valueFor($bucketStart->format('Y-m-d H'))];
         }
 
         return $out;
+    }
+
+    private function hourlyBucketExpression(string $column): string
+    {
+        return match (DB::connection()->getDriverName()) {
+            'sqlite' => "strftime('%Y-%m-%d %H', {$column})",
+            'mysql', 'mariadb' => "DATE_FORMAT({$column}, '%Y-%m-%d %H')",
+            'pgsql' => "to_char({$column}, 'YYYY-MM-DD HH24')",
+            'sqlsrv' => "FORMAT({$column}, 'yyyy-MM-dd HH')",
+            default => "strftime('%Y-%m-%d %H', {$column})",
+        };
+    }
+
+    private function dailyBucketExpression(string $column): string
+    {
+        return match (DB::connection()->getDriverName()) {
+            'sqlite' => "strftime('%Y-%m-%d', {$column})",
+            'mysql', 'mariadb' => "DATE_FORMAT({$column}, '%Y-%m-%d')",
+            'pgsql' => "to_char({$column}, 'YYYY-MM-DD')",
+            'sqlsrv' => "FORMAT({$column}, 'yyyy-MM-dd')",
+            default => "strftime('%Y-%m-%d', {$column})",
+        };
     }
 }

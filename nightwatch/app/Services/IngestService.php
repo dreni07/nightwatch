@@ -12,10 +12,10 @@ use App\Events\LogReceived;
 use App\Events\MailReceived;
 use App\Events\NotificationReceived;
 use App\Events\OutgoingHttpReceived;
-use App\Events\ProjectStatusChanged;
 use App\Events\QueryReceived;
 use App\Events\RequestReceived;
 use App\Events\ScheduledTaskReceived;
+use App\Jobs\RecalculateProjectStatus;
 use App\Models\HubCache;
 use App\Models\HubCommand;
 use App\Models\HubException;
@@ -415,34 +415,6 @@ class IngestService
 
     private function recalculateStatus(Project $project): void
     {
-        $oldStatus = $project->status;
-
-        $recentCritical = HubHealthCheck::where('project_id', $project->id)
-            ->where('created_at', '>=', now()->subMinutes(10))
-            ->whereIn('status', ['critical', 'error'])
-            ->exists();
-
-        $recentExceptions = HubException::where('project_id', $project->id)
-            ->where('created_at', '>=', now()->subMinutes(10))
-            ->count();
-
-        if ($recentCritical || $recentExceptions >= 10) {
-            $newStatus = 'critical';
-        } elseif ($recentExceptions >= 3) {
-            $newStatus = 'warning';
-        } else {
-            $newStatus = 'normal';
-        }
-
-        if ($oldStatus !== $newStatus) {
-            $project->update(['status' => $newStatus]);
-
-            broadcast(new ProjectStatusChanged([
-                'project_id' => $project->id,
-                'project_name' => $project->name,
-                'old_status' => $oldStatus,
-                'new_status' => $newStatus,
-            ]));
-        }
+        RecalculateProjectStatus::dispatch($project->id);
     }
 }
