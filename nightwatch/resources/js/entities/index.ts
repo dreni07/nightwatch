@@ -1,5 +1,6 @@
 export type { Project, ProjectStatus, ProjectCredentials } from './project';
 export type { HubException } from './exception';
+export type { ClientErrorEvent } from './client-error-event';
 export type { HubRequest } from './request';
 export type { HubQuery } from './query';
 export type { HubJob, JobStatus } from './job';
@@ -23,6 +24,12 @@ export type {
     NpmVulnerabilitySeverity,
     NpmAuditMetadata,
 } from './npm-audit';
+export type {
+    EmailReport,
+    EmailReportFrequency,
+    EmailReportSection,
+    EmailReportScope,
+} from './email-report';
 
 export type PaginatedResponse<T> = {
     data: T[];

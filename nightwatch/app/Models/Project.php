@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Project extends Model
@@ -41,6 +42,11 @@ class Project extends Model
             'metadata' => 'array',
             'last_heartbeat_at' => 'datetime',
         ];
+    }
+
+    public function getRouteKeyName(): string
+    {
+        return 'project_uuid';
     }
 
     protected function apiTokenLastFour(): Attribute
@@ -130,4 +136,13 @@ class Project extends Model
     {
         return $this->hasMany(HubNpmAudit::class);
     }
+
+    public function assignees(): BelongsToMany 
+    {
+        return $this->belongsToMany(User::class, 'project_user_assignments')
+            ->withPivot(['assigned_by'])
+            ->withTimestamps();
+    }
+
+    
 }
