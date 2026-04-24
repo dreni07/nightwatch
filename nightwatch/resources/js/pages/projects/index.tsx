@@ -14,7 +14,6 @@ import {
     TableHeader,
     TableRow,
 } from '@/components/ui/table';
-
 import { InviteMemberDialog } from '@/features/teams/components/invite-member-dialog';
 import type {
     PaginatedResponse,
