@@ -1,9 +1,11 @@
 <?php
 
 use App\Http\Controllers\DashboardOverviewController;
+use App\Http\Controllers\EmailReportsController;
 use App\Http\Controllers\ExceptionsController;
 use App\Http\Controllers\ClientErrorEventsController;
 use App\Http\Controllers\HubAuditsController;
+use App\Http\Controllers\InsightsController;
 use App\Http\Controllers\HubCacheController;
 use App\Http\Controllers\HubCommandsController;
 use App\Http\Controllers\HubHealthChecksController;
@@ -83,7 +85,6 @@ Route::middleware(['auth', 'team'])->group(function () {
     });
 });
 
-
 Route::middleware(['auth', 'team'])->group(function () {
     Route::get('api/project-ids', function () {
         return Project::pluck('id');
@@ -96,6 +97,13 @@ Route::middleware(['auth', 'team'])->group(function () {
 
         return Inertia::render('dashboard', $metrics->overview($filters));
     })->name('dashboard');
+
+    Route::get('insights', [InsightsController::class, 'index'])->name('insights.index');
+
+    Route::get('email-reports', [EmailReportsController::class, 'index'])->name('email-reports.index');
+    Route::post('email-reports', [EmailReportsController::class, 'store'])->name('email-reports.store');
+    Route::patch('email-reports/{emailReport}', [EmailReportsController::class, 'update'])->name('email-reports.update');
+    Route::delete('email-reports/{emailReport}', [EmailReportsController::class, 'destroy'])->name('email-reports.destroy');
 
     Route::controller(ProjectsController::class)->prefix('projects')->group(function () {
         Route::get('/', 'index')->name('projects.index');
@@ -120,8 +128,6 @@ Route::middleware(['auth', 'team'])->group(function () {
     Route::controller(HubRequestsController::class)->group(function () {
         Route::get('hub-requests', 'index')->name('hub-requests.index');
     });
-
-
 
     Route::controller(HubQueriesController::class)->group(function () {
         Route::get('queries', 'index')->name('queries.index');

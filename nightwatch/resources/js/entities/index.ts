@@ -24,6 +24,12 @@ export type {
     NpmVulnerabilitySeverity,
     NpmAuditMetadata,
 } from './npm-audit';
+export type {
+    EmailReport,
+    EmailReportFrequency,
+    EmailReportSection,
+    EmailReportScope,
+} from './email-report';
 
 export type PaginatedResponse<T> = {
     data: T[];
